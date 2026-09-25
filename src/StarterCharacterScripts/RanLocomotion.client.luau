@@ -1,165 +1,145 @@
 --!strict
 
--- Runtime locomotion for the Ran Online skinned character.
---
--- IMPORTANT:
--- Do not invent Bone.Transform axes for a Mixamo skeleton. The imported
--- skeleton has authored joint orientations, so arbitrary CFrame.Angles()
--- rotations can twist/stretch the mesh. Use the actual KeyframeSequences
--- authored for this rig instead.
---
--- Roblox supports localized Studio playback of a KeyframeSequence through
--- KeyframeSequenceProvider:RegisterActiveKeyframeSequence(). This avoids
--- requiring a published AnimationId while we are developing in Studio.
+-- Procedural locomotion for the Ran Online skinned character.
+-- The source-controlled character does not contain published Walk/Run assets,
+-- so locomotion is generated from the actual Mixamo bone rest pose.
 
 local Players = game:GetService("Players")
-local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local character = script.Parent
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 local root = character:WaitForChild("HumanoidRootPart") :: BasePart
-local animator = humanoid:WaitForChild("Animator") :: Animator
+local meshObject = character:FindFirstChild("tripo_node_d2795b5d", true)
 
--- Roblox may inject the legacy Animate LocalScript. It is incompatible with
--- this non-R6 rig, so disable it if present.
+if not meshObject or not meshObject:IsA("MeshPart") then
+	warn("[RanLocomotion] Character mesh not found; locomotion disabled")
+	return
+end
+
+local mesh = meshObject :: MeshPart
+
+-- Disable Roblox's legacy R6 animator if the engine injects it.
 local animate = character:FindFirstChild("Animate")
 if animate and animate:IsA("LocalScript") then
 	animate.Enabled = false
 end
 
-local function findSequence(name: string): KeyframeSequence?
-	local candidate = character:FindFirstChild(name, true)
-	if candidate and candidate:IsA("KeyframeSequence") then
-		return candidate
+type BoneState = { bone: Bone, axis: Vector3 }
+local bones: {[string]: BoneState} = {}
+
+local function registerBone(name: string)
+	local object = mesh:FindFirstChild(name, true)
+	if not object or not object:IsA("Bone") then
+		warn("[RanLocomotion] Missing bone: " .. name)
+		return
 	end
 
-	-- Saved Animation Editor data is commonly kept under AnimSaves.
-	local animSaves = character:FindFirstChild("AnimSaves", true)
-	if animSaves then
-		candidate = animSaves:FindFirstChild(name, true)
-		if candidate and candidate:IsA("KeyframeSequence") then
-			return candidate
-		end
+	local bone = object :: Bone
+	local axis = bone.WorldCFrame:VectorToObjectSpace(root.CFrame.RightVector)
+	if axis.Magnitude > 0.001 then
+		bones[name] = { bone = bone, axis = axis.Unit }
 	end
-
-	return nil
 end
 
-local function makeTrack(sequence: KeyframeSequence, label: string): AnimationTrack?
-	local ok, contentId = pcall(function()
-		return KeyframeSequenceProvider:RegisterActiveKeyframeSequence(sequence)
-	end)
-
-	if not ok then
-		warn("[RanLocomotion] Could not register " .. label .. ": " .. tostring(contentId))
-		return nil
-	end
-
-	local animation = Instance.new("Animation")
-	animation.Name = "Ran_" .. label .. "_Runtime"
-	animation.AnimationId = contentId
-	animation.Parent = script
-
-	local loaded, result = pcall(function()
-		return animator:LoadAnimation(animation)
-	end)
-
-	if not loaded then
-		warn("[RanLocomotion] Could not load " .. label .. ": " .. tostring(result))
-		animation:Destroy()
-		return nil
-	end
-
-	local track = result :: AnimationTrack
-	track.Looped = true
-	track.Priority = Enum.AnimationPriority.Movement
-
-	print(string.format(
-		"[RanLocomotion] Loaded %s | length=%.3f | id=%s",
-		label,
-		track.Length,
-		tostring(contentId)
-	))
-
-	return track
+for _, name in ipairs({
+	"mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine1", "mixamorig:Spine2",
+	"mixamorig:Neck", "mixamorig:Head",
+	"mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig:LeftFoot", "mixamorig:LeftToeBase",
+	"mixamorig:RightUpLeg", "mixamorig:RightLeg", "mixamorig:RightFoot", "mixamorig:RightToeBase",
+	"mixamorig:LeftArm", "mixamorig:LeftForeArm", "mixamorig:LeftHand",
+	"mixamorig:RightArm", "mixamorig:RightForeArm", "mixamorig:RightHand",
+}) do
+	registerBone(name)
 end
 
-local walkSequence = findSequence("Swordsman_Walk")
-local runSequence = findSequence("Swordsman_Run")
-
-if not walkSequence then
-	warn("[RanLocomotion] Swordsman_Walk KeyframeSequence is missing from the character")
-end
-if not runSequence then
-	warn("[RanLocomotion] Swordsman_Run KeyframeSequence is missing from the character")
-end
-
-local walkTrack = if walkSequence then makeTrack(walkSequence, "Walk") else nil
-local runTrack = if runSequence then makeTrack(runSequence, "Run") else nil
-
-if not walkTrack and not runTrack then
-	warn("[RanLocomotion] No authored locomotion sequences are available. No procedural bone deformation will be applied.")
+if not bones["mixamorig:Hips"] then
+	warn("[RanLocomotion] Hips bone not found; locomotion disabled")
 	return
 end
 
-local active: AnimationTrack? = nil
-
-local function stopTrack(track: AnimationTrack?)
-	if track and track.IsPlaying then
-		track:Stop(0.15)
+local function resetBones()
+	for _, state in pairs(bones) do
+		state.bone.Transform = CFrame.identity
 	end
 end
 
-local function selectTrack(target: AnimationTrack?)
-	if active == target then
-		return
-	end
-
-	stopTrack(active)
-	active = target
-
-	if active then
-		active:Play(0.15, 1, 1)
+local function rotate(name: string, radians: number)
+	local state = bones[name]
+	if state then
+		state.bone.Transform = CFrame.fromAxisAngle(state.axis, radians)
 	end
 end
 
-RunService.RenderStepped:Connect(function()
+local function applyPose(phase: number, intensity: number, running: boolean)
+	local s = math.sin(phase)
+	local c = math.cos(phase)
+
+	local legSwing = (running and math.rad(34) or math.rad(25)) * intensity
+	local knee = (running and math.rad(22) or math.rad(12)) * intensity
+	local foot = (running and math.rad(16) or math.rad(11)) * intensity
+	local armSwing = (running and math.rad(30) or math.rad(20)) * intensity
+	local elbow = (running and math.rad(16) or math.rad(8)) * intensity
+
+	-- Alternating legs.
+	rotate("mixamorig:LeftUpLeg", s * legSwing)
+	rotate("mixamorig:RightUpLeg", -s * legSwing)
+	rotate("mixamorig:LeftLeg", math.max(0, -s) * knee)
+	rotate("mixamorig:RightLeg", math.max(0, s) * knee)
+	rotate("mixamorig:LeftFoot", -s * foot)
+	rotate("mixamorig:RightFoot", s * foot)
+	rotate("mixamorig:LeftToeBase", -s * math.rad(5) * intensity)
+	rotate("mixamorig:RightToeBase", s * math.rad(5) * intensity)
+
+	-- Arms counter-swing against the legs.
+	rotate("mixamorig:LeftArm", -s * armSwing)
+	rotate("mixamorig:RightArm", s * armSwing)
+	rotate("mixamorig:LeftForeArm", math.max(0, s) * elbow)
+	rotate("mixamorig:RightForeArm", math.max(0, -s) * elbow)
+
+	-- Small body motion.
+	local hip = (running and math.rad(5) or math.rad(3)) * intensity
+	local spine = (running and math.rad(3) or math.rad(2)) * intensity
+	rotate("mixamorig:Hips", c * hip)
+	rotate("mixamorig:Spine", -c * spine)
+	rotate("mixamorig:Spine1", c * spine * 0.65)
+	rotate("mixamorig:Spine2", -c * spine * 0.4)
+	rotate("mixamorig:Neck", -s * math.rad(2) * intensity)
+	rotate("mixamorig:Head", s * math.rad(2) * intensity)
+end
+
+local phase = 0
+local moving = false
+
+RunService.RenderStepped:Connect(function(dt)
 	if humanoid.Health <= 0 then
-		selectTrack(nil)
+		if moving then resetBones(); moving = false end
 		return
 	end
 
-	local moveAmount = humanoid.MoveDirection.Magnitude
-	local horizontalVelocity = Vector3.new(
-		root.AssemblyLinearVelocity.X,
-		0,
-		root.AssemblyLinearVelocity.Z
-	).Magnitude
+	local inputMagnitude = humanoid.MoveDirection.Magnitude
+	local velocity = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude
 
-	if moveAmount < 0.05 or horizontalVelocity < 0.15 then
-		selectTrack(nil)
+	if inputMagnitude < 0.05 or velocity < 0.15 then
+		if moving then resetBones(); moving = false end
 		return
 	end
 
-	-- WalkSpeed is 16. Keep run as the higher-speed state without changing
-	-- the character's actual movement speed.
-	local target = if horizontalVelocity >= 12 then runTrack else walkTrack
+	moving = true
+	local walkSpeed = math.max(humanoid.WalkSpeed, 1)
+	local ratio = math.clamp(velocity / walkSpeed, 0.35, 1.5)
+	local running = velocity >= walkSpeed * 0.8
+	local frequency = if running then 9 else 6.5
 
-	-- If one authored clip is unavailable, use the other instead of applying
-	-- unsafe procedural Bone.Transform rotations.
-	if not target then
-		target = if walkTrack then walkTrack else runTrack
-	end
+	phase += dt * frequency * ratio
+	if phase >= math.pi * 2 then phase -= math.pi * 2 end
 
-	selectTrack(target)
-
-	if active then
-		local baseSpeed = if active == runTrack then 1.10 else 1.0
-		local scale = math.clamp(horizontalVelocity / math.max(humanoid.WalkSpeed, 1), 0.75, 1.35)
-		active:AdjustSpeed(baseSpeed * scale)
-	end
+	local intensity = math.clamp(velocity / walkSpeed, 0.65, 1)
+	resetBones()
+	applyPose(phase, intensity, running)
 end)
 
-print("[RanLocomotion] Authored locomotion controller active for " .. player.Name)
+local count = 0
+for _ in pairs(bones) do count += 1 end
+print(string.format("[RanLocomotion] Procedural locomotion active for %s | bones=%d", player.Name, count))
