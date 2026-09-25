@@ -1,0 +1,14 @@
+# Roblox Studio
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# Rojo
+.rojo/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
