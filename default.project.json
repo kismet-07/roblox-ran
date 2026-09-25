@@ -7,6 +7,13 @@
       "RanOnlineAnimations": {
         "$path": "src/ReplicatedStorage/RanOnlineAnimations"
       }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterCharacterScripts": {
+        "$className": "StarterCharacterScripts",
+        "$path": "src/StarterCharacterScripts"
+      }
     }
   }
 }
