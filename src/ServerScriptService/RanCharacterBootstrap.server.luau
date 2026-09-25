@@ -46,14 +46,18 @@ local function normalizeVisualScale(character: Model)
 	character:SetAttribute("RanCharacterNormalized", true)
 end
 
-local function ensureRoot(character: Model, mesh: MeshPart): BasePart
+local function ensureRoot(character: Model, mesh: MeshPart, player: Player): BasePart
 	local existing = character:FindFirstChild("HumanoidRootPart")
 	if existing and existing:IsA("BasePart") then
 		return existing
 	end
 
-	local boundsCFrame, bounds = character:GetBoundingBox()
+	local _, bounds = character:GetBoundingBox()
 
+	-- Do NOT use GetBoundingBox().CFrame here. That is an oriented bounding
+	-- box and its orientation is not a valid character orientation. For this
+	-- asset it can rotate the entire character onto its side.
+	-- The imported MeshPart already has the correct authored orientation.
 	local root = Instance.new("Part")
 	root.Name = "HumanoidRootPart"
 	root.Size = Vector3.new(
@@ -61,7 +65,7 @@ local function ensureRoot(character: Model, mesh: MeshPart): BasePart
 		math.max(bounds.Y * 0.50, 1.0),
 		math.max(bounds.Z * 0.70, 0.8)
 	)
-	root.CFrame = boundsCFrame
+	root.CFrame = mesh.CFrame
 	root.Transparency = 1
 	root.CanCollide = true
 	root.CanTouch = false
@@ -82,6 +86,11 @@ local function ensureRoot(character: Model, mesh: MeshPart): BasePart
 	weld.Parent = character
 
 	character.PrimaryPart = root
+
+	pcall(function()
+		root:SetNetworkOwner(player)
+	end)
+
 	return root
 end
 
@@ -96,11 +105,11 @@ local function ensureHumanoid(character: Model, root: BasePart, player: Player):
 		humanoid.Parent = character
 	end
 
-	-- This is a custom skinned mesh, not an R6/R15 body. Prevent the
-	-- standard neck requirement from killing the Humanoid immediately.
 	humanoid.RequiresNeck = false
 	humanoid.BreakJointsOnDeath = false
 	humanoid.AutoRotate = true
+	humanoid.PlatformStand = false
+	humanoid.Sit = false
 	humanoid.WalkSpeed = 16
 	humanoid.JumpPower = 50
 	humanoid.UseJumpPower = true
@@ -125,14 +134,16 @@ local function prepareCharacter(player: Player, character: Model)
 	normalizeVisualScale(character)
 	mesh = getMesh(character)
 
-	local root = ensureRoot(character, mesh)
+	local root = ensureRoot(character, mesh, player)
 	local humanoid = ensureHumanoid(character, root, player)
 
 	character.PrimaryPart = root
 	character:SetAttribute("RanCharacterBootstrapDone", true)
 
+	humanoid:ChangeState(Enum.HumanoidStateType.Running)
+
 	print(string.format(
-		"[RanCharacterBootstrap] Ready %s | height=%.2f | Humanoid=%s | HRP=%s",
+		"[RanCharacterBootstrap] Ready %s | height=%.2f | Humanoid=%s | HRP=%s | root=mesh",
 		player.Name,
 		character:GetExtentsSize().Y,
 		tostring(humanoid.Parent ~= nil),
@@ -141,9 +152,6 @@ local function prepareCharacter(player: Player, character: Model)
 end
 
 local function onCharacterAdded(player: Player, character: Model)
-	-- CharacterAdded fires after the model is assigned. Construct the
-	-- movement shell immediately; StarterCharacterScripts can safely wait
-	-- for Humanoid/HRP while this runs.
 	prepareCharacter(player, character)
 end
 
