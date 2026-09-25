@@ -1,160 +1,165 @@
 --!strict
 
--- Canonical Ran Online locomotion controller.
--- The custom character is a Mixamo-style skinned mesh, not an R6 body.
--- We deliberately do not use Roblox's default Animate script.
+-- Runtime locomotion for the Ran Online skinned character.
 --
--- This controller owns the bone transforms while the character is moving.
--- It uses the imported skeleton directly so locomotion does not depend on
--- unpublished Animation asset IDs.
+-- IMPORTANT:
+-- Do not invent Bone.Transform axes for a Mixamo skeleton. The imported
+-- skeleton has authored joint orientations, so arbitrary CFrame.Angles()
+-- rotations can twist/stretch the mesh. Use the actual KeyframeSequences
+-- authored for this rig instead.
+--
+-- Roblox supports localized Studio playback of a KeyframeSequence through
+-- KeyframeSequenceProvider:RegisterActiveKeyframeSequence(). This avoids
+-- requiring a published AnimationId while we are developing in Studio.
 
 local Players = game:GetService("Players")
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local character = script.Parent
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 local root = character:WaitForChild("HumanoidRootPart") :: BasePart
-local mesh = character:WaitForChild("tripo_node_d2795b5d") :: MeshPart
+local animator = humanoid:WaitForChild("Animator") :: Animator
 
-humanoid.AutoRotate = true
-
-local function bone(name: string): Bone
-	local value = mesh:FindFirstChild(name, true)
-	assert(value and value:IsA("Bone"), "Missing required Ran Online bone: " .. name)
-	return value
+-- Roblox may inject the legacy Animate LocalScript. It is incompatible with
+-- this non-R6 rig, so disable it if present.
+local animate = character:FindFirstChild("Animate")
+if animate and animate:IsA("LocalScript") then
+	animate.Enabled = false
 end
 
-local hips = bone("mixamorig:Hips")
-local spine = bone("mixamorig:Spine")
-local spine1 = bone("mixamorig:Spine1")
-local spine2 = bone("mixamorig:Spine2")
-local neck = bone("mixamorig:Neck")
-local head = bone("mixamorig:Head")
+local function findSequence(name: string): KeyframeSequence?
+	local candidate = character:FindFirstChild(name, true)
+	if candidate and candidate:IsA("KeyframeSequence") then
+		return candidate
+	end
 
-local leftUpperLeg = bone("mixamorig:LeftUpLeg")
-local leftLowerLeg = bone("mixamorig:LeftLeg")
-local leftFoot = bone("mixamorig:LeftFoot")
-local leftToe = bone("mixamorig:LeftToeBase")
+	-- Saved Animation Editor data is commonly kept under AnimSaves.
+	local animSaves = character:FindFirstChild("AnimSaves", true)
+	if animSaves then
+		candidate = animSaves:FindFirstChild(name, true)
+		if candidate and candidate:IsA("KeyframeSequence") then
+			return candidate
+		end
+	end
 
-local rightUpperLeg = bone("mixamorig:RightUpLeg")
-local rightLowerLeg = bone("mixamorig:RightLeg")
-local rightFoot = bone("mixamorig:RightFoot")
-local rightToe = bone("mixamorig:RightToeBase")
-
-local leftUpperArm = bone("mixamorig:LeftArm")
-local leftForeArm = bone("mixamorig:LeftForeArm")
-local rightUpperArm = bone("mixamorig:RightArm")
-local rightForeArm = bone("mixamorig:RightForeArm")
-
-local animatedBones = {
-	hips, spine, spine1, spine2, neck, head,
-	leftUpperLeg, leftLowerLeg, leftFoot, leftToe,
-	rightUpperLeg, rightLowerLeg, rightFoot, rightToe,
-	leftUpperArm, leftForeArm, rightUpperArm, rightForeArm,
-}
-
--- Capture the actual imported rest transforms once. Never use a transform
--- produced by the locomotion loop as a future baseline.
-local rest: {[Bone]: CFrame} = {}
-for _, currentBone in animatedBones do
-	rest[currentBone] = currentBone.Transform
+	return nil
 end
 
-local function setTransform(currentBone: Bone, offset: CFrame)
-	currentBone.Transform = rest[currentBone] * offset
+local function makeTrack(sequence: KeyframeSequence, label: string): AnimationTrack?
+	local ok, contentId = pcall(function()
+		return KeyframeSequenceProvider:RegisterActiveKeyframeSequence(sequence)
+	end)
+
+	if not ok then
+		warn("[RanLocomotion] Could not register " .. label .. ": " .. tostring(contentId))
+		return nil
+	end
+
+	local animation = Instance.new("Animation")
+	animation.Name = "Ran_" .. label .. "_Runtime"
+	animation.AnimationId = contentId
+	animation.Parent = script
+
+	local loaded, result = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+
+	if not loaded then
+		warn("[RanLocomotion] Could not load " .. label .. ": " .. tostring(result))
+		animation:Destroy()
+		return nil
+	end
+
+	local track = result :: AnimationTrack
+	track.Looped = true
+	track.Priority = Enum.AnimationPriority.Movement
+
+	print(string.format(
+		"[RanLocomotion] Loaded %s | length=%.3f | id=%s",
+		label,
+		track.Length,
+		tostring(contentId)
+	))
+
+	return track
 end
 
-local function reset()
-	for _, currentBone in animatedBones do
-		currentBone.Transform = rest[currentBone]
+local walkSequence = findSequence("Swordsman_Walk")
+local runSequence = findSequence("Swordsman_Run")
+
+if not walkSequence then
+	warn("[RanLocomotion] Swordsman_Walk KeyframeSequence is missing from the character")
+end
+if not runSequence then
+	warn("[RanLocomotion] Swordsman_Run KeyframeSequence is missing from the character")
+end
+
+local walkTrack = if walkSequence then makeTrack(walkSequence, "Walk") else nil
+local runTrack = if runSequence then makeTrack(runSequence, "Run") else nil
+
+if not walkTrack and not runTrack then
+	warn("[RanLocomotion] No authored locomotion sequences are available. No procedural bone deformation will be applied.")
+	return
+end
+
+local active: AnimationTrack? = nil
+
+local function stopTrack(track: AnimationTrack?)
+	if track and track.IsPlaying then
+		track:Stop(0.15)
 	end
 end
 
-local function damp(current: number, target: number, dt: number, response: number): number
-	return current + (target - current) * (1 - math.exp(-response * dt))
+local function selectTrack(target: AnimationTrack?)
+	if active == target then
+		return
+	end
+
+	stopTrack(active)
+	active = target
+
+	if active then
+		active:Play(0.15, 1, 1)
+	end
 end
 
-local phase = 0
-local blend = 0
-local targetBlend = 0
-local state = "Idle"
-
-RunService.RenderStepped:Connect(function(dt)
+RunService.RenderStepped:Connect(function()
 	if humanoid.Health <= 0 then
-		reset()
+		selectTrack(nil)
 		return
 	end
 
-	local velocity = root.AssemblyLinearVelocity
-	local horizontal = Vector3.new(velocity.X, 0, velocity.Z)
-	local speed = horizontal.Magnitude
-	local hasInput = humanoid.MoveDirection.Magnitude > 0.05
+	local moveAmount = humanoid.MoveDirection.Magnitude
+	local horizontalVelocity = Vector3.new(
+		root.AssemblyLinearVelocity.X,
+		0,
+		root.AssemblyLinearVelocity.Z
+	).Magnitude
 
-	if not hasInput or speed < 0.15 then
-		targetBlend = 0
-	else
-		targetBlend = math.clamp(speed / math.max(humanoid.WalkSpeed, 1), 0, 1)
-		state = if speed >= 12 then "Run" else "Walk"
-	end
-
-	blend = damp(blend, targetBlend, dt, 12)
-
-	if blend < 0.005 then
-		phase = 0
-		reset()
+	if moveAmount < 0.05 or horizontalVelocity < 0.15 then
+		selectTrack(nil)
 		return
 	end
 
-	-- A complete cycle is two steps. Running simply advances the same gait
-	-- faster and with slightly larger motion.
-	local cycleSpeed = if state == "Run" then 10.0 else 7.0
-	local intensity = if state == "Run" then 1.18 else 1.0
-	phase = (phase + dt * cycleSpeed) % (math.pi * 2)
+	-- WalkSpeed is 16. Keep run as the higher-speed state without changing
+	-- the character's actual movement speed.
+	local target = if horizontalVelocity >= 12 then runTrack else walkTrack
 
-	local s = math.sin(phase)
-	local c = math.cos(phase)
-	local stepA = math.max(0, s)
-	local stepB = math.max(0, -s)
-	local bob = math.abs(c)
+	-- If one authored clip is unavailable, use the other instead of applying
+	-- unsafe procedural Bone.Transform rotations.
+	if not target then
+		target = if walkTrack then walkTrack else runTrack
+	end
 
-	-- Legs: strong alternating thigh swing, controlled knee bend, and
-	-- compensating ankle/toe motion to keep the feet visually planted.
-	local thigh = math.rad(27) * intensity * blend
-	local knee = math.rad(24) * intensity * blend
-	local ankle = math.rad(12) * intensity * blend
-	local toe = math.rad(7) * intensity * blend
+	selectTrack(target)
 
-	setTransform(leftUpperLeg, CFrame.Angles(-s * thigh, 0, 0))
-	setTransform(rightUpperLeg, CFrame.Angles(s * thigh, 0, 0))
-
-	setTransform(leftLowerLeg, CFrame.Angles(stepA * knee, 0, 0))
-	setTransform(rightLowerLeg, CFrame.Angles(stepB * knee, 0, 0))
-
-	setTransform(leftFoot, CFrame.Angles(s * ankle, 0, 0))
-	setTransform(rightFoot, CFrame.Angles(-s * ankle, 0, 0))
-	setTransform(leftToe, CFrame.Angles(-s * toe, 0, 0))
-	setTransform(rightToe, CFrame.Angles(s * toe, 0, 0))
-
-	-- Arms counter the legs and bend slightly at the elbows.
-	local arm = math.rad(22) * intensity * blend
-	local elbow = math.rad(10) * intensity * blend
-	setTransform(leftUpperArm, CFrame.Angles(s * arm, 0, 0))
-	setTransform(rightUpperArm, CFrame.Angles(-s * arm, 0, 0))
-	setTransform(leftForeArm, CFrame.Angles(stepB * elbow, 0, 0))
-	setTransform(rightForeArm, CFrame.Angles(stepA * elbow, 0, 0))
-
-	-- Subtle pelvis/torso motion. The translation is intentionally tiny;
-	-- the HumanoidRootPart remains the sole physics body.
-	local hipBob = math.rad(2.5) * intensity * blend
-	setTransform(hips,
-		CFrame.Angles(0, c * math.rad(2.0) * intensity * blend, 0)
-			* CFrame.new(0, bob * 0.025 * blend, 0))
-	setTransform(spine, CFrame.Angles(-c * hipBob, 0, 0))
-	setTransform(spine1, CFrame.Angles(-c * hipBob * 0.65, 0, 0))
-	setTransform(spine2, CFrame.Angles(-c * hipBob * 0.4, 0, 0))
-	setTransform(neck, CFrame.Angles(c * math.rad(0.8) * blend, 0, 0))
-	setTransform(head, CFrame.Angles(-c * math.rad(0.5) * blend, 0, 0))
+	if active then
+		local baseSpeed = if active == runTrack then 1.10 else 1.0
+		local scale = math.clamp(horizontalVelocity / math.max(humanoid.WalkSpeed, 1), 0.75, 1.35)
+		active:AdjustSpeed(baseSpeed * scale)
+	end
 end)
 
-print("[RanLocomotion] Active for " .. player.Name)
+print("[RanLocomotion] Authored locomotion controller active for " .. player.Name)
