@@ -4,6 +4,10 @@
 *.rbxm
 *.rbxmx
 
+# Keep the imported Ran Online character asset in source control.
+!assets/
+!assets/*.rbxm
+
 # Rojo
 .rojo/
 
