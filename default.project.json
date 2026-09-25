@@ -1,0 +1,12 @@
+{
+  "name": "roblox-ran",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "RanOnlineAnimations": {
+        "$path": "src/ReplicatedStorage/RanOnlineAnimations"
+      }
+    }
+  }
+}
