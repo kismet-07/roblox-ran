@@ -8,11 +8,12 @@
         "$path": "src/ReplicatedStorage/RanOnlineAnimations"
       }
     },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$path": "src/ServerScriptService"
+    },
     "StarterPlayer": {
       "$className": "StarterPlayer",
-      "StarterHumanoid": {
-        "$className": "Humanoid"
-      },
       "StarterCharacter": {
         "$path": "assets/RanOnlineCharacter.rbxm"
       },
