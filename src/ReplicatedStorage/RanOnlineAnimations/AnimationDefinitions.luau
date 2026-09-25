@@ -1,15 +1,47 @@
--- Ran Online Roblox animation source definitions.
---
--- This module intentionally contains no published Roblox asset IDs yet.
--- Walk/Run/Sprint/Idle animation data will be added here as source-controlled
--- definitions and generated into Roblox animation objects during development.
+--!strict
 
-local Animations = {
+-- Source-controlled animation definitions for the Ran Online-inspired character.
+--
+-- IMPORTANT:
+-- These are logical animation definitions, not Roblox asset IDs.
+-- Published asset IDs will be added only after the corresponding animations
+-- are created/verified on the actual character rig in Roblox Studio.
+
+export type AnimationDefinition = {
+    AssetId: string?,
+    Loop: boolean,
+    Priority: Enum.AnimationPriority,
+}
+
+export type CharacterAnimationSet = {
+    Idle: AnimationDefinition,
+    Walk: AnimationDefinition,
+    Run: AnimationDefinition,
+    Sprint: AnimationDefinition,
+}
+
+local Animations: { [string]: CharacterAnimationSet } = {
     Swordsman = {
-        Idle = nil,
-        Walk = nil,
-        Run = nil,
-        Sprint = nil,
+        Idle = {
+            AssetId = nil,
+            Loop = true,
+            Priority = Enum.AnimationPriority.Idle,
+        },
+        Walk = {
+            AssetId = nil,
+            Loop = true,
+            Priority = Enum.AnimationPriority.Movement,
+        },
+        Run = {
+            AssetId = nil,
+            Loop = true,
+            Priority = Enum.AnimationPriority.Movement,
+        },
+        Sprint = {
+            AssetId = nil,
+            Loop = true,
+            Priority = Enum.AnimationPriority.Movement,
+        },
     },
 }
 
