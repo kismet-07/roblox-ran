@@ -10,11 +10,13 @@
     },
     "StarterPlayer": {
       "$className": "StarterPlayer",
+      "StarterHumanoid": {
+        "$className": "Humanoid"
+      },
       "StarterCharacter": {
         "$path": "assets/RanOnlineCharacter.rbxm"
       },
       "StarterCharacterScripts": {
-        "$className": "StarterCharacterScripts",
         "$path": "src/StarterCharacterScripts"
       }
     }
