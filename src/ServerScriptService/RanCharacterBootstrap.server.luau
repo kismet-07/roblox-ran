@@ -1,10 +1,5 @@
 --!strict
 
--- Runtime bootstrap for the imported Ran Online character.
--- The checked-in .rbxm is the visual/skinned character asset. It does not
--- contain the Roblox movement body, so we construct the minimal physics
--- shell here before the client locomotion controller starts.
-
 local Players = game:GetService("Players")
 
 local TARGET_HEIGHT = 5
@@ -32,18 +27,31 @@ local function getMesh(character: Model): MeshPart
 end
 
 local function normalizeVisualScale(character: Model)
-	if character:GetAttribute("RanCharacterNormalized") == true then
-		return
-	end
-
 	local _, bounds = character:GetBoundingBox()
 	if bounds.Y <= 0 then
 		error("Ran Online character has an invalid bounding-box height")
 	end
 
-	local scaleFactor = TARGET_HEIGHT / bounds.Y
-	character:ScaleTo(character:GetScale() * scaleFactor)
-	character:SetAttribute("RanCharacterNormalized", true)
+	local currentScale = character:GetScale()
+	if currentScale <= 0 then
+		error("Ran Online character has an invalid model scale")
+	end
+
+	-- ScaleTo takes an absolute canonical scale. Recover the unscaled asset
+	-- height first so a previously scaled model is never multiplied again.
+	local originalHeight = bounds.Y / currentScale
+	local targetScale = TARGET_HEIGHT / originalHeight
+	character:ScaleTo(targetScale)
+
+	local _, normalizedBounds = character:GetBoundingBox()
+	print(string.format(
+		"[RanCharacterBootstrap] Scale normalized | currentHeight=%.2f | currentScale=%.4f | originalHeight=%.4f | targetScale=%.4f | finalHeight=%.2f",
+		bounds.Y,
+		currentScale,
+		originalHeight,
+		targetScale,
+		normalizedBounds.Y
+	))
 end
 
 local function ensureRoot(character: Model, mesh: MeshPart, player: Player): BasePart
@@ -53,11 +61,6 @@ local function ensureRoot(character: Model, mesh: MeshPart, player: Player): Bas
 	end
 
 	local _, bounds = character:GetBoundingBox()
-
-	-- Do NOT use GetBoundingBox().CFrame here. That is an oriented bounding
-	-- box and its orientation is not a valid character orientation. For this
-	-- asset it can rotate the entire character onto its side.
-	-- The imported MeshPart already has the correct authored orientation.
 	local root = Instance.new("Part")
 	root.Name = "HumanoidRootPart"
 	root.Size = Vector3.new(
@@ -86,7 +89,6 @@ local function ensureRoot(character: Model, mesh: MeshPart, player: Player): Bas
 	weld.Parent = character
 
 	character.PrimaryPart = root
-
 	pcall(function()
 		root:SetNetworkOwner(player)
 	end)
@@ -96,12 +98,9 @@ end
 
 local function ensureHumanoid(character: Model, root: BasePart, player: Player): Humanoid
 	local existing = character:FindFirstChildOfClass("Humanoid")
-	local humanoid: Humanoid
+	local humanoid = existing or Instance.new("Humanoid")
 
-	if existing then
-		humanoid = existing
-	else
-		humanoid = Instance.new("Humanoid")
+	if not existing then
 		humanoid.Parent = character
 	end
 
@@ -119,7 +118,6 @@ local function ensureHumanoid(character: Model, root: BasePart, player: Player):
 
 	local _, bounds = character:GetBoundingBox()
 	humanoid.HipHeight = math.max((bounds.Y - root.Size.Y) * 0.5, 0)
-
 	return humanoid
 end
 
@@ -129,7 +127,6 @@ local function prepareCharacter(player: Player, character: Model)
 	end
 
 	removeLegacyControllers(character)
-
 	local mesh = getMesh(character)
 	normalizeVisualScale(character)
 	mesh = getMesh(character)
@@ -139,34 +136,29 @@ local function prepareCharacter(player: Player, character: Model)
 
 	character.PrimaryPart = root
 	character:SetAttribute("RanCharacterBootstrapDone", true)
-
 	humanoid:ChangeState(Enum.HumanoidStateType.Running)
 
 	print(string.format(
-		"[RanCharacterBootstrap] Ready %s | height=%.2f | Humanoid=%s | HRP=%s | root=mesh",
+		"[RanCharacterBootstrap] Ready %s | height=%.2f | scale=%.4f | Humanoid=%s | HRP=%s | root=%s",
 		player.Name,
 		character:GetExtentsSize().Y,
+		character:GetScale(),
 		tostring(humanoid.Parent ~= nil),
-		tostring(root.Parent ~= nil)
+		tostring(root.Parent ~= nil),
+		root.Name
 	))
-end
-
-local function onCharacterAdded(player: Player, character: Model)
-	prepareCharacter(player, character)
 end
 
 local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character)
-		onCharacterAdded(player, character)
+		prepareCharacter(player, character)
 	end)
-
 	if player.Character then
-		onCharacterAdded(player, player.Character)
+		prepareCharacter(player, player.Character)
 	end
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
-
 for _, player in Players:GetPlayers() do
 	onPlayerAdded(player)
 end
